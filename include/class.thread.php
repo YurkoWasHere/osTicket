@@ -524,7 +524,7 @@ implements Searchable {
 
         case 'A': # System administrator
         case 'S': # Staff member (agent)
-            $vars['thread-type'] = 'N';
+            $vars['thread-type'] = 'R';
             $vars['staffId'] = $mailinfo['staffId'];
             if ($vars['staffId'])
                 $vars['poster'] = Staff::lookup($mailinfo['staffId']);
@@ -543,6 +543,11 @@ implements Searchable {
             ) {
                 $vars['thread-type'] = 'M';
                 $vars['userId'] = $object->getUserId();
+            }
+            elseif (Staff::getIdByEmail($mailinfo['email'])) {
+                $vars['thread-type'] = 'R';
+                $vars['staffId'] = Staff::getIdByEmail($mailinfo['email']);
+                $vars['poster'] = Staff::lookup($mailinfo['staffId']);               
             }
             // Consider collaborator role (disambiguate staff members as
             // collaborators). Normally, the block above should match based
@@ -611,6 +616,12 @@ implements Searchable {
             elseif ($this instanceof ObjectThread)
                 return $this->addNote($vars, $errors);
             break;
+         case 'R':
+            $vars['response'] = $body;
+            $vars['reply-to'] = 'all';
+            $vars['emailcollab'] = $object->getActiveCollaborators();
+            return $object->postReplyCustom($vars, $errors, true, true);
+            break; 
         }
 
         throw new Exception('Unable to continue thread via email.');
