@@ -3442,6 +3442,131 @@ implements RestrictedAccess, Threadable, Searchable {
 
         return $response;
     }
+    function postReplyCustom($vars, &$errors, $alert=true, $claim=true) {
+        global $thisstaff, $cfg;
+
+        if (!$vars['poster'] && $thisstaff)
+            $vars['poster'] = $thisstaff;
+
+        if (!$vars['staffId'] && $thisstaff)
+            $vars['staffId'] = $thisstaff->getId();
+
+        if (!$vars['ip_address'] && $_SERVER['REMOTE_ADDR'])
+            $vars['ip_address'] = $_SERVER['REMOTE_ADDR'];
+
+        // Add new collaborators (if any).
+        //if (isset($vars['ccs']) && count($vars['ccs']))
+        //    $this->addCollaborators($vars['ccs'], array(), $errors);
+        //
+        //if ($collabs = $this->getCollaborators()) {
+        //    foreach ($collabs as $collaborator) {
+        //        $cid = $collaborator->getUserId();
+        //        // Enable collaborators if they were reselected
+        //        if (!$collaborator->isActive() && ($vars['ccs'] && in_array($cid, $vars['ccs'])))
+        //            $collaborator->setFlag(Collaborator::FLAG_ACTIVE, true);
+        //        // Disable collaborators if they were unchecked
+        //        elseif ($collaborator->isActive() && (!$vars['ccs'] || !in_array($cid, $vars['ccs'])))
+        //            $collaborator->setFlag(Collaborator::FLAG_ACTIVE, false);
+        //
+        //    $collaborator->save();
+        //    }
+        //}
+        // clear db cache
+        //$this->getThread()->_collaborators = null;
+
+        // Get active recipients of the response
+        $recipients = $this->getRecipients($vars['reply-to'], $vars['ccs']);
+        if ($recipients instanceof MailingList)
+            $vars['thread_entry_recipients'] = $recipients->getEmailAddresses();
+        
+        if (!($response = $this->getThread()->addResponse($vars, $errors)))
+            return null;
+
+        $dept = $this->getDept();
+        $assignee = $this->getStaff();
+        // Set status if new is selected
+        if ($vars['reply_status_id']
+                && ($status = TicketStatus::lookup($vars['reply_status_id']))
+                && $status->getId() != $this->getStatusId())
+            $this->setStatus($status);
+
+        // Claim on response bypasses the department assignment restrictions
+        $claim = ($claim
+                && $cfg->autoClaimTickets()
+                && !$dept->disableAutoClaim());
+        if ($claim && $thisstaff && $this->isOpen() && !$this->getStaffId()) {
+            $this->setStaffId($thisstaff->getId()); //direct assignment;
+        }
+
+         if(!$this->isAssigned()) {
+             $this->setStaffId($vars['staffId']);
+         }
+
+        $this->lastrespondent = $response->staff;
+
+        $this->onResponse($response, array('assignee' => $assignee)); //do house cleaning..
+
+        /* email the user??  - if disabled - then bail out */
+        if (!$alert)
+            return $response;
+
+        //allow agent to send from different dept email
+        if (!$vars['from_email_id']
+                ||  !($email = Email::lookup($vars['from_email_id'])))
+            $email = $dept->getEmail();
+
+        $options = array('thread'=>$response);
+        $signature = $from_name = '';
+        if ($thisstaff && $vars['signature']=='mine')
+            $signature=$thisstaff->getSignature();
+        elseif ($vars['signature']=='dept' && $dept->isPublic())
+            $signature=$dept->getSignature();
+
+        if ($thisstaff && ($type=$thisstaff->getReplyFromNameType())) {
+            switch ($type) {
+                case 'mine':
+                    if (!$cfg->hideStaffName())
+                        $from_name = (string) $thisstaff->getName();
+                    break;
+                case 'dept':
+                    if ($dept->isPublic())
+                        $from_name = $dept->getName();
+                    break;
+                case 'email':
+                default:
+                    $from_name =  $email->getName();
+            }
+            if ($from_name)
+                $options += array('from_name' => $from_name);
+        }
+
+        $variables = array(
+            'response' => $response,
+            'signature' => $signature,
+            'staff' => $thisstaff,
+            'poster' => $thisstaff
+        );
+        
+        if ($email
+                && $recipients
+                && ($tpl = $dept->getTemplate())
+                && ($msg=$tpl->getReplyMsgTemplate())) {
+
+            $msg = $this->replaceVars($msg->asArray(),
+                $variables + array('recipient' => $this->getOwner())
+            );
+
+            // Attachments
+            $attachments = $cfg->emailAttachments() ?
+                $response->getAttachments() : array();
+
+            //Send email to recepients
+            $email->send($recipients, $msg['subj'], $msg['body'],
+                    $attachments, $options);
+        }
+
+        return $response;
+    }
 
     //Activity log - saved as internal notes WHEN enabled!!
     function logActivity($title, $note) {
